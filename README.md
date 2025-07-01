@@ -11,10 +11,9 @@ SoCreveTo1989 is a Discord bot designed to enhance your server experience with u
 
 ### Features
 
-- **Automated Moderation**: Helps manage your server with ease.
-- **Custom Commands**: Create and use custom commands tailored to your needs.
-- **Fun and Games**: Engage your community with interactive games and activities.
-
+- **Listen to music**: Enjoy your favorite tracks directly in your Discord server.
+- **Blind test**: Challenge your friends with fun blind tests.
+- **Games**: Play various games with your friends.
 
 ### License
 
