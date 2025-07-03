@@ -6,8 +6,7 @@ Welcome to the SoCreveTo1989 project! This repository contains all the necessary
 
 ### Description
 
-SoCreveTo1989 is a Discord bot designed to enhance your server experience with unique features and functionalities.
-
+SoCreveTo1989 is a Discord bot designed to enhance your server experience with unique features and functionalities. If you have the reference of the name of the bot.
 
 ### Features
 
