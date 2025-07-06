@@ -1,3 +1,8 @@
+/*
+This command send a reference link to the name of the bot.
+*/
+
+
 import { SlashCommandBuilder, CommandInteraction } from "discord.js";
 
 const refListPromise = import("../utils/sentences.js").then(

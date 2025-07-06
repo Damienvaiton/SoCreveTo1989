@@ -91,7 +91,6 @@ client.commands = new Collection<string, any>();
 	client.login(process.env.DISCORD_API_TOKEN).catch(console.error);
 })();
 
-// Pour TypeScript : ajouter ce type à `client` dans un fichier global.d.ts :
 declare module "discord.js" {
 	interface Client {
 		commands: Collection<string, any>;
