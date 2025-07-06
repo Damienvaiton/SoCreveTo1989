@@ -9,7 +9,7 @@ export default {
 	once: true,
 	async execute(client: Client) {
 		console.log(`✅ Connecté en tant que ${client.user?.tag}`);
-
+		/*
 		const startMessages = await startMessagesPromise;
 
 		client.guilds.cache.forEach((guild) => {
@@ -23,6 +23,6 @@ export default {
 					startMessages[Math.floor(Math.random() * startMessages.length)];
 				textChannel.send(message).catch(console.error);
 			}
-		});
+		});*/
 	},
 };
