@@ -3,8 +3,8 @@ import * as cheerio from "cheerio";
 
 // Vérifie qu'on a bien la variable d'environnement
 if (!process.env.GENIUS_API_TOKEN) {
-	console.warn(
-		"⚠️ Variable GENIUS_API_TOKEN non définie dans le fichier .env !"
+	throw new Error(
+		"❌ Variable GENIUS_API_TOKEN non définie dans le fichier .env ! Veuillez définir cette variable pour utiliser l'API Genius."
 	);
 }
 
