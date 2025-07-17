@@ -3,8 +3,7 @@ import {
 	ChatInputCommandInteraction,
 	AttachmentBuilder,
 } from "discord.js";
-import { fetchLyrics } from "../services/lyricsService.ts";
-
+import { fetchLyrics } from "../services/lyricsService.js";
 const data = new SlashCommandBuilder()
 	.setName("lyrics")
 	.setDescription("Affiche les paroles d'une chanson via Genius")
