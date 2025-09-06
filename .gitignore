@@ -35,3 +35,8 @@ coverage/
 
 # Ignore OneDrive temporary files
 *.tmp.driveupload
+
+
+# Ignore SQLite database files
+*.sqlite
+*.db

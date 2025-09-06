@@ -5,6 +5,7 @@ import path from "path";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
 
+
 // Equivalent de __dirname en ES6
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
@@ -21,6 +22,8 @@ const client = new Client({
 		GatewayIntentBits.MessageContent,
 	],
 });
+
+
 
 // Pour typer correctement les commandes
 client.commands = new Collection<string, any>();
@@ -85,6 +88,9 @@ client.commands = new Collection<string, any>();
 			console.error(`❌ Erreur lors du chargement de l'event ${file}:`, error);
 		}
 	}
+
+	
+
 
 	// 🔐 Connexion à l'API Discord
 	console.log("🚀 Connexion au bot...");

@@ -4,3 +4,12 @@ npm-debug.log
 *.tsbuildinfo
 .git
 .gitignore
+
+# Ignore IDE specific files
+.vscode
+.idea
+.DS_Store
+
+# Ignore DB 
+*.sqlite
+*.db
