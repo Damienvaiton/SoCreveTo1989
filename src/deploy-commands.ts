@@ -8,10 +8,12 @@ dotenv.config();
 
 const commands = [];
 
-const commandsPath = path.join(process.cwd(), "src", "commands");
+// MODIFICATION ICI : Pointer vers le dossier 'dist' après compilation
+const commandsPath = path.join(process.cwd(), "dist", "commands"); // Ancien: "src"
+
 const commandFiles = fs
 	.readdirSync(commandsPath)
-	.filter((file) => file.endsWith(".ts") || file.endsWith(".js"));
+	.filter((file) => file.endsWith(".js")); // Modifier pour ne chercher que les .js
 
 for (const file of commandFiles) {
 	const filePath = path.join(commandsPath, file);
@@ -20,7 +22,6 @@ for (const file of commandFiles) {
 	try {
 		const commandModule = await import(fileUrl);
 
-		// Essayer différentes façons d'importer
 		const command = commandModule.default || commandModule;
 
 		console.log(`📁 Chargement de ${file}:`, {
