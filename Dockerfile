@@ -1,6 +1,6 @@
 # Utilisez une image Node.js officielle comme base.
 # Nous choisissons une version LTS alpine pour une taille d'image réduite.
-FROM node:18-alpine
+FROM node:22-alpine
 
 # Définissez le répertoire de travail dans le conteneur.
 # Toutes les commandes suivantes seront exécutées à partir de ce répertoire.
