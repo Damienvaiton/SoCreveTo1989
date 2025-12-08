@@ -4,6 +4,7 @@ import {
 	AttachmentBuilder,
 } from "discord.js";
 import { fetchLyrics } from "../services/lyricsService.js";
+
 const data = new SlashCommandBuilder()
 	.setName("lyrics")
 	.setDescription("Affiche les paroles d'une chanson via Genius")
@@ -19,21 +20,25 @@ async function execute(interaction: ChatInputCommandInteraction) {
 	await interaction.deferReply();
 
 	try {
-		const lyrics = await fetchLyrics(query);
+		const result = await fetchLyrics(query);
 
-		if (!lyrics) {
+		if (!result) {
 			await interaction.editReply("❌ Paroles introuvables.");
 			return;
 		}
 
-		// Crée un fichier texte en mémoire avec Buffer
-		const buffer = Buffer.from(lyrics, "utf-8");
+		// On crée le fichier
+		const buffer = Buffer.from(result.lyrics, "utf-8"); // result.lyrics est bien une string maintenant
+
+		// Nom de fichier propre (sans caractères bizarres)
+		const safeTitle = result.title.replace(/[^a-z0-9]/gi, "_").toLowerCase();
 		const attachment = new AttachmentBuilder(buffer, {
-			name: `paroles-${query}.txt`,
+			name: `paroles-${safeTitle}.txt`,
 		});
 
+		// Réponse avec le titre et l'artiste (dispo grâce à l'objet LyricsResult)
 		await interaction.editReply({
-			content: `🎶 **Paroles pour "${query}"**`,
+			content: `🎶 **Paroles pour "${result.title}"** de **${result.artist}**\n*(Voir fichier joint)*`,
 			files: [attachment],
 		});
 	} catch (error) {
