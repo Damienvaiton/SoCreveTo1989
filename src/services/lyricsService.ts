@@ -14,16 +14,7 @@ const GENIUS_HEADERS = {
 	Authorization: `Bearer ${process.env.GENIUS_API_TOKEN}`,
 };
 
-// --- INTERFACE MODIFIÉE ---
-export interface GapFillData {
-	songTitle: string;
-	artist: string;
-	album: string;
-	cover: string;
-	maskedLine: string; // La phrase avec les trous
-	originalLine: string; // NOUVEAU : La phrase complète
-	missingWords: string[];
-}
+// --- INTERFACES ---
 
 export interface GameData {
 	snippet: string;
@@ -34,7 +25,23 @@ export interface GameData {
 	cover: string;
 	allLines: string[];
 	startIndex: number;
+	// Liens Streaming
+	spotifyUrl?: string;
+	appleMusicUrl?: string;
+	soundcloudUrl?: string;
+	youtubeUrl?: string;
 }
+
+export interface GapFillData {
+	songTitle: string;
+	artist: string;
+	album: string;
+	cover: string;
+	maskedLine: string;
+	originalLine: string;
+	missingWords: string[];
+}
+
 export interface LyricsResult {
 	title: string;
 	artist: string;
@@ -42,6 +49,8 @@ export interface LyricsResult {
 	cover: string;
 	lyrics: string;
 }
+
+// Ordre chronologique
 const ALBUM_ORDER = [
 	"Taylor Swift",
 	"Fearless",
@@ -57,6 +66,8 @@ const ALBUM_ORDER = [
 	"The Life Of A Showgirl",
 ];
 
+// --- HELPERS ---
+
 async function searchSongOnGenius(query: string): Promise<any | null> {
 	try {
 		const res = await axios.get(`${GENIUS_API_URL}/search`, {
@@ -68,6 +79,18 @@ async function searchSongOnGenius(query: string): Promise<any | null> {
 		return null;
 	}
 }
+
+async function getSongMediaData(songId: number): Promise<any> {
+	try {
+		const res = await axios.get(`${GENIUS_API_URL}/songs/${songId}`, {
+			headers: GENIUS_HEADERS,
+		});
+		return res.data.response.song.media || [];
+	} catch (err) {
+		return [];
+	}
+}
+
 async function extractLyricsFromPage(url: string): Promise<string | null> {
 	try {
 		const res = await axios.get(url);
@@ -88,6 +111,7 @@ async function extractLyricsFromPage(url: string): Promise<string | null> {
 		return null;
 	}
 }
+
 export function getAvailableAlbums(): string[] {
 	try {
 		const jsonPath = path.join(process.cwd(), "src", "utils", "TaySongs.json");
@@ -108,6 +132,8 @@ export function getAvailableAlbums(): string[] {
 		return [];
 	}
 }
+
+// --- FONCTION 1 : BLIND TEST (/guess) ---
 export async function getRandomSongSnippet(
 	linesRequested: number | null,
 	allowedAlbums: string[] | null
@@ -118,8 +144,10 @@ export async function getRandomSongSnippet(
 		const rawData = fs.readFileSync(jsonPath, "utf-8");
 		const artistsData = JSON.parse(rawData);
 		const artistObj = artistsData[0];
+
 		const allAlbumKeys = Object.keys(artistObj.albums);
 		let eligibleAlbums: string[] = [];
+
 		if (allowedAlbums && allowedAlbums.length > 0) {
 			eligibleAlbums = allAlbumKeys.filter((alb) =>
 				allowedAlbums.includes(alb)
@@ -127,31 +155,50 @@ export async function getRandomSongSnippet(
 		} else {
 			eligibleAlbums = allAlbumKeys;
 		}
+
 		if (eligibleAlbums.length === 0) return null;
+
 		const randomAlbumName =
 			eligibleAlbums[Math.floor(Math.random() * eligibleAlbums.length)];
 		const songsList = artistObj.albums[randomAlbumName];
 		if (!songsList || songsList.length === 0) return null;
+
 		const randomSongTitle =
 			songsList[Math.floor(Math.random() * songsList.length)];
+		console.log(`[GUESS] 🎲 Tirage: ${randomSongTitle}`);
+
 		const songData = await searchSongOnGenius(
 			`${artistObj.artist} ${randomSongTitle}`
 		);
 		if (!songData) return null;
+
 		const fullLyrics = await extractLyricsFromPage(songData.url);
 		if (!fullLyrics) return null;
+
 		const snippetSize = linesRequested || 2;
 		const lines = fullLyrics.split("\n").filter((l) => l.trim().length > 0);
 		if (lines.length <= snippetSize + 1)
 			return getRandomSongSnippet(linesRequested, allowedAlbums);
+
 		const randomStart = Math.floor(
 			Math.random() * (lines.length - snippetSize)
 		);
 		const snippet = lines
 			.slice(randomStart, randomStart + snippetSize)
 			.join("\n");
+
 		if (snippet.toLowerCase().includes(songData.title.toLowerCase()))
 			return getRandomSongSnippet(linesRequested, allowedAlbums);
+
+		// Récupération des liens
+		const mediaData = await getSongMediaData(songData.id);
+		const spotify = mediaData.find((m: any) => m.provider === "spotify")?.url;
+		const apple = mediaData.find((m: any) => m.provider === "apple_music")?.url;
+		const soundcloud = mediaData.find(
+			(m: any) => m.provider === "soundcloud"
+		)?.url;
+		const youtube = mediaData.find((m: any) => m.provider === "youtube")?.url;
+
 		return {
 			snippet: snippet,
 			title: songData.title,
@@ -161,26 +208,18 @@ export async function getRandomSongSnippet(
 			cover: songData.song_art_image_url || songData.header_image_thumbnail_url,
 			allLines: lines,
 			startIndex: randomStart,
+			spotifyUrl: spotify,
+			appleMusicUrl: apple,
+			soundcloudUrl: soundcloud,
+			youtubeUrl: youtube,
 		};
 	} catch (error) {
+		console.error("Erreur jeu :", error);
 		return null;
 	}
 }
-export async function fetchLyrics(query: string): Promise<LyricsResult | null> {
-	const songData = await searchSongOnGenius(query);
-	if (!songData) return null;
-	const lyricsText = await extractLyricsFromPage(songData.url);
-	if (!lyricsText) return null;
-	return {
-		title: songData.title,
-		artist: songData.primary_artist.name,
-		url: songData.url,
-		cover: songData.song_art_image_url || songData.header_image_thumbnail_url,
-		lyrics: lyricsText,
-	};
-}
 
-// --- FONCTION JEU /FILL ---
+// --- FONCTION 2 : TEXTE A TROUS (/fill) ---
 export async function getGapFillData(
 	albumFilter: string | null,
 	difficulty: "easy" | "medium" | "hard"
@@ -209,7 +248,7 @@ export async function getGapFillData(
 		const randomSongTitle =
 			songsList[Math.floor(Math.random() * songsList.length)];
 
-		console.log(`[FILL] 🎲 Tirage (${difficulty}): ${randomSongTitle}`);
+		console.log(`[FILL] 🎲 Tirage: ${randomSongTitle}`);
 		const songData = await searchSongOnGenius(
 			`${artistObj.artist} ${randomSongTitle}`
 		);
@@ -221,10 +260,7 @@ export async function getGapFillData(
 		if (lines.length < 5) return getGapFillData(albumFilter, difficulty);
 
 		const randomLineIndex = Math.floor(Math.random() * (lines.length - 2)) + 1;
-
-		// IMPORTANT : On garde la ligne originale ici
 		const originalLine = lines[randomLineIndex];
-
 		const words = originalLine.split(" ");
 
 		const eligibleIndices = words
@@ -255,7 +291,6 @@ export async function getGapFillData(
 			indicesToHide = shuffled.slice(0, count);
 		}
 
-		// On masque les mots dans le tableau 'words'
 		indicesToHide.forEach((index) => {
 			const originalWord = words[index];
 			const cleanWord = originalWord.replace(/[^a-zA-Z0-9À-ÿ]/g, "");
@@ -268,12 +303,27 @@ export async function getGapFillData(
 			artist: songData.primary_artist.name,
 			album: randomAlbumName,
 			cover: songData.song_art_image_url || songData.header_image_thumbnail_url,
-			maskedLine: words.join(" "), // La version avec les trous
-			originalLine: originalLine, // NOUVEAU : La version originale complète
+			maskedLine: words.join(" "),
+			originalLine: originalLine,
 			missingWords: missingWords,
 		};
 	} catch (e) {
 		console.error("[FILL] Erreur:", e);
 		return null;
 	}
+}
+
+// --- FONCTION 3 : RECHERCHE (/lyrics) ---
+export async function fetchLyrics(query: string): Promise<LyricsResult | null> {
+	const songData = await searchSongOnGenius(query);
+	if (!songData) return null;
+	const lyricsText = await extractLyricsFromPage(songData.url);
+	if (!lyricsText) return null;
+	return {
+		title: songData.title,
+		artist: songData.primary_artist.name,
+		url: songData.url,
+		cover: songData.song_art_image_url || songData.header_image_thumbnail_url,
+		lyrics: lyricsText,
+	};
 }

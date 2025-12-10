@@ -34,34 +34,56 @@ const CONFIG_EXPIRATION_MS = 5 * 60 * 1000;
 // --- GESTION DES PARTIES EN COURS ---
 const activeGames = new Set<string>();
 
-// IDs Configuration
+// IDs
 const ID_CONF_MODE = "conf_mode";
 const ID_CONF_LINES = "conf_lines";
 const ID_CONF_HINTS = "conf_hints";
 const ID_CONF_START = "conf_start";
 const ID_MODAL_LINES = "modal_lines";
 const ID_INPUT_LINES = "input_lines";
-
-// IDs Jeu
 const ID_GAME_CANCEL = "game_cancel";
 const ID_GAME_HINT_ALBUM = "game_hint_album";
 const ID_GAME_HINT_PENDU = "game_hint_pendu";
 const ID_GAME_HINT_LYRICS = "game_hint_lyrics";
 
-// Outils
-const cleanTitleForGame = (title: string) =>
-	title
-		.replace(
-			/\s*[\(\[]?(Taylor's Version|From The Vault|10 Minute Version)[\)\]]?/gi,
-			""
-		)
-		.trim();
-const normalizeString = (str: string) =>
-	cleanTitleForGame(str)
+// --- OUTILS DE NETTOYAGE ---
+const cleanTitleForGame = (title: string) => {
+	let clean = title.replace(/[\u2018\u2019`]/g, "'");
+	const patternsToRemove = [
+		"Taylor's Version",
+		"From The Vault",
+		"10 Minute Version",
+		"Piano Version",
+		"Live",
+		"Remix",
+		"Acoustic",
+		"Sad Girl Autumn Version",
+		"Recorded at",
+	];
+	let previous = "";
+	while (clean !== previous) {
+		previous = clean;
+		const regex = new RegExp(
+			`\\s*([\\(\\[\\-]|\\s)\\s*(${patternsToRemove.join(
+				"|"
+			)}).*?([\\)\\]]|$)|\\s*-\\s*$`,
+			"gi"
+		);
+		clean = clean.replace(regex, "");
+	}
+	return clean.trim();
+};
+
+const normalizeString = (str: string) => {
+	if (!str) return "";
+	let s = cleanTitleForGame(str);
+	return s
 		.toLowerCase()
 		.replace(/[.,?!:;“”'"\/]/g, "")
 		.replace(/\s+/g, " ")
 		.trim();
+};
+
 const generateHangman = (title: string) =>
 	cleanTitleForGame(title).replace(/[a-zA-Z0-9À-ÿ]/g, "_ ");
 
@@ -69,7 +91,6 @@ export default {
 	data: new SlashCommandBuilder()
 		.setName("guess")
 		.setDescription("Lance une partie de Blind Test (Configuration incluse)")
-		// AJOUT DE L'OPTION DUEL
 		.addUserOption((option) =>
 			option
 				.setName("duel")
@@ -85,15 +106,19 @@ export default {
 			});
 		const channel = interaction.channel as TextChannel;
 
-		// --- 0. RECUPERATION DU DUEL ---
 		const opponent = interaction.options.getUser("duel");
 
-		// Petites vérifications anti-troll
+		// LOG INITIAL
+		console.log(
+			`[CMD] 👤 ${interaction.user.tag} lance /guess dans #${channel.name} ${
+				opponent ? `(Duel vs ${opponent.tag})` : ""
+			}`
+		);
+
 		if (opponent) {
 			if (opponent.bot)
 				return interaction.reply({
-					content:
-						"🤖 Tu ne peux pas défier un robot (il gagnerait tout le temps).",
+					content: "🤖 Tu ne peux pas défier un robot.",
 					flags: MessageFlags.Ephemeral,
 				});
 			if (opponent.id === interaction.user.id)
@@ -103,11 +128,12 @@ export default {
 				});
 		}
 
-		// --- 1. VERIFICATION ANTI-SPAM ---
 		if (activeGames.has(channel.id)) {
+			console.log(
+				`[CMD] 🚫 Partie refusée (déjà en cours) dans #${channel.name}`
+			);
 			return interaction.reply({
-				content:
-					"🚫 **Une partie est déjà en cours !** Finissez-la avant de relancer.",
+				content: "🚫 **Une partie est déjà en cours !**",
 				flags: MessageFlags.Ephemeral,
 			});
 		}
@@ -118,18 +144,17 @@ export default {
 		try {
 			const allAlbums = getAvailableAlbums();
 
-			// 2. CHARGEMENT CONFIG
 			let config = {
 				selectedAlbums: [...allAlbums],
 				lines: 2,
 				hintsEnabled: true,
 			};
-
 			const savedConfig = userConfigs.get(interaction.user.id);
 			if (
 				savedConfig &&
 				Date.now() - savedConfig.lastUpdated < CONFIG_EXPIRATION_MS
 			) {
+				console.log(`[CONF] 💾 Config chargée pour ${interaction.user.tag}`);
 				config.selectedAlbums = savedConfig.selectedAlbums;
 				config.lines = savedConfig.lines;
 				config.hintsEnabled = savedConfig.hintsEnabled;
@@ -142,14 +167,11 @@ export default {
 				});
 			};
 
-			// 3. DASHBOARD
 			const renderDashboard = () => {
 				const isAllSelected = config.selectedAlbums.length === allAlbums.length;
 				const albumText = isAllSelected
 					? "Tous les albums (Aléatoire)"
 					: `${config.selectedAlbums.length} albums sélectionnés`;
-
-				// Texte personnalisé si c'est un duel
 				const duelText = opponent
 					? `⚔️ **DUEL** contre ${opponent.username}`
 					: "🌍 Mode Solo / Public";
@@ -159,7 +181,7 @@ export default {
 					.setDescription(
 						`Configure ta partie avant de lancer !\n\n${duelText}`
 					)
-					.setColor(opponent ? 0xff0000 : 0x2b2d31) // Rouge si Duel
+					.setColor(opponent ? 0xff0000 : 0x2b2d31)
 					.addFields(
 						{ name: "💿 Albums", value: albumText, inline: true },
 						{ name: "📝 Lignes", value: `${config.lines}`, inline: true },
@@ -178,14 +200,12 @@ export default {
 							.setValue(alb)
 							.setDefault(config.selectedAlbums.includes(alb))
 					);
-
 				const selectMenu = new StringSelectMenuBuilder()
 					.setCustomId(ID_CONF_MODE)
 					.setPlaceholder("Filtrer les albums...")
 					.setMinValues(1)
 					.setMaxValues(menuOptions.length)
 					.addOptions(menuOptions);
-
 				const btnLines = new ButtonBuilder()
 					.setCustomId(ID_CONF_LINES)
 					.setLabel(`Lignes : ${config.lines}`)
@@ -212,12 +232,10 @@ export default {
 					btnHints,
 					btnStart
 				);
-
 				return { embeds: [embed], components: [row1, row2] };
 			};
 
 			const dashboardMsg = await interaction.editReply(renderDashboard());
-
 			const confCollector = dashboardMsg.createMessageComponentCollector({
 				filter: (i) => i.user.id === interaction.user.id,
 				time: 60000,
@@ -226,6 +244,7 @@ export default {
 			confCollector.on("collect", async (i) => {
 				if (i.customId === ID_CONF_MODE && i.isStringSelectMenu()) {
 					config.selectedAlbums = i.values;
+					console.log(`[CONF] 💿 Albums modifiés: ${i.values.length} sélec.`);
 					saveConfigToCache();
 					await i.update(renderDashboard());
 				} else if (i.customId === ID_CONF_LINES) {
@@ -234,7 +253,7 @@ export default {
 						.setTitle("Configuration des Lignes");
 					const linesInput = new TextInputBuilder()
 						.setCustomId(ID_INPUT_LINES)
-						.setLabel("Combien de lignes afficher ? (1-5)")
+						.setLabel("Lignes (1-5)")
 						.setStyle(TextInputStyle.Short)
 						.setPlaceholder("2")
 						.setValue(config.lines.toString())
@@ -245,7 +264,6 @@ export default {
 						new ActionRowBuilder<TextInputBuilder>().addComponents(linesInput)
 					);
 					await i.showModal(modal);
-
 					try {
 						const sub = await i.awaitModalSubmit({
 							filter: (s) =>
@@ -254,16 +272,19 @@ export default {
 						});
 						const val = parseInt(sub.fields.getTextInputValue(ID_INPUT_LINES));
 						config.lines = isNaN(val) || val < 1 || val > 5 ? 2 : val;
+						console.log(`[CONF] 📝 Lignes modifiées: ${config.lines}`);
 						saveConfigToCache();
 						await sub.deferUpdate();
 						await interaction.editReply(renderDashboard());
 					} catch (e) {}
 				} else if (i.customId === ID_CONF_HINTS) {
 					config.hintsEnabled = !config.hintsEnabled;
+					console.log(`[CONF] 💡 Indices: ${config.hintsEnabled}`);
 					saveConfigToCache();
 					await i.update(renderDashboard());
 				} else if (i.customId === ID_CONF_START) {
 					confCollector.stop("start");
+					console.log(`[CONF] 🚀 Lancement demandé par ${i.user.tag}`);
 					await i.update({
 						content: opponent
 							? `⚔️ **Duel lancé !**`
@@ -271,20 +292,16 @@ export default {
 						embeds: [],
 						components: [],
 					});
-					// On transmet l'adversaire (opponent) à runGame
 					runGame(channel, config, interaction.user, opponent);
-					return;
 				}
 			});
 
 			confCollector.on("end", (_, reason) => {
 				if (reason !== "start") {
+					console.log(`[CONF] ⏱️ Timeout config.`);
 					activeGames.delete(channel.id);
 					interaction
-						.editReply({
-							content: "⏱️ Temps de configuration écoulé.",
-							components: [],
-						})
+						.editReply({ content: "⏱️ Temps écoulé.", components: [] })
 						.catch(() => {});
 				}
 			});
@@ -295,18 +312,15 @@ export default {
 	},
 };
 
-// 4. FONCTION DU JEU (PUBLIC)
 async function runGame(
 	channel: TextChannel,
 	config: { selectedAlbums: string[]; lines: number; hintsEnabled: boolean },
 	launcher: User,
-	opponent: User | null // L'adversaire peut être null (mode public)
+	opponent: User | null
 ) {
-	// Message de chargement
 	let startMessage = opponent
-		? `⚔️ **DUEL** : ${launcher} 🆚 ${opponent} !\nPréparez-vous...`
-		: `🎶 *Recherche d'une chanson...*`;
-
+		? `⚔️ **DUEL** : ${launcher} 🆚 ${opponent} !`
+		: `🎶 *Recherche...*`;
 	const loadingMsg = await channel.send(startMessage);
 
 	const gameData = await getRandomSongSnippet(
@@ -315,11 +329,14 @@ async function runGame(
 	);
 
 	if (!gameData) {
+		console.log(`[GAME] ❌ Échec chargement chanson`);
 		activeGames.delete(channel.id);
-		return loadingMsg.edit(
-			"❌ Erreur : Impossible de trouver une chanson avec ces filtres."
-		);
+		return loadingMsg.edit("❌ Erreur : Aucune chanson trouvée.");
 	}
+
+	console.log(
+		`[GAME] 🎮 Partie active: "${gameData.title}" (Lignes: ${config.lines})`
+	);
 
 	let currentLines = config.lines;
 	const hints = { album: false, pendu: false, lyricsAdded: 0 };
@@ -328,16 +345,13 @@ async function runGame(
 		const currentSnippet = gameData.allLines
 			.slice(gameData.startIndex, gameData.startIndex + currentLines)
 			.join("\n");
-
 		let footer = "Jeu illimité";
 		if (hints.album) footer += ` • 💿 ${gameData.album}`;
 		if (hints.pendu) footer += ` • 🔤 ${generateHangman(gameData.title)}`;
 
-		// Titre de l'Embed adapté au mode
 		const embedTitle = opponent
 			? `⚔️ DUEL : ${launcher.username} vs ${opponent.username}`
 			: "🎤 Blind Test : Taylor Swift";
-
 		const embedColor = opponent ? 0xff0000 : 0x0099ff;
 
 		const embed = new EmbedBuilder()
@@ -352,7 +366,6 @@ async function runGame(
 			.setFooter({ text: footer });
 
 		const row = new ActionRowBuilder<ButtonBuilder>();
-
 		if (config.hintsEnabled) {
 			row.addComponents(
 				new ButtonBuilder()
@@ -378,7 +391,6 @@ async function runGame(
 					.setDisabled(!canAdd || hints.lyricsAdded >= 3)
 			);
 		}
-
 		row.addComponents(
 			new ButtonBuilder()
 				.setCustomId(ID_GAME_CANCEL)
@@ -390,45 +402,41 @@ async function runGame(
 	};
 
 	const gameMsg = await loadingMsg.edit(renderGame());
-
-	// --- FILTRE DU COLLECTEUR DE MESSAGE ---
 	const msgCol = channel.createMessageCollector({
 		filter: (m) => {
 			if (m.author.bot) return false;
-			// Si c'est un duel, on accepte UNIQUEMENT le lanceur ou l'adversaire
-			if (opponent) {
+			if (opponent)
 				return m.author.id === launcher.id || m.author.id === opponent.id;
-			}
-			// Sinon tout le monde peut jouer
 			return true;
 		},
 	});
-
 	const btnCol = gameMsg.createMessageComponentCollector();
 
 	let winner: Message | null = null;
 
 	btnCol.on("collect", async (i) => {
-		// En mode Duel, on peut restreindre les boutons aux participants aussi si tu veux
-		if (opponent && i.user.id !== launcher.id && i.user.id !== opponent.id) {
-			return i.reply({
-				content: "🤫 Chut ! Ce duel ne vous regarde pas.",
-				flags: MessageFlags.Ephemeral,
-			});
-		}
+		if (opponent && i.user.id !== launcher.id && i.user.id !== opponent.id)
+			return i.reply({ content: "🤫 Chut !", flags: MessageFlags.Ephemeral });
 
 		if (i.customId === ID_GAME_CANCEL) {
+			console.log(`[GAME] 🏳️ Abandon demandé par ${i.user.tag}`);
 			msgCol.stop("cancel");
 			await i.deferUpdate();
 			return;
 		}
-		if (i.customId === ID_GAME_HINT_ALBUM) hints.album = true;
-		if (i.customId === ID_GAME_HINT_PENDU) hints.pendu = true;
+		if (i.customId === ID_GAME_HINT_ALBUM) {
+			console.log(`[GAME] 💡 Indice Album par ${i.user.tag}`);
+			hints.album = true;
+		}
+		if (i.customId === ID_GAME_HINT_PENDU) {
+			console.log(`[GAME] 💡 Indice Pendu par ${i.user.tag}`);
+			hints.pendu = true;
+		}
 		if (i.customId === ID_GAME_HINT_LYRICS) {
+			console.log(`[GAME] 💡 Indice Suite par ${i.user.tag}`);
 			currentLines++;
 			hints.lyricsAdded++;
 		}
-
 		await i.update(renderGame());
 	});
 
@@ -442,12 +450,50 @@ async function runGame(
 		}
 	});
 
+	const getEndGameComponents = () => {
+		const row = new ActionRowBuilder<ButtonBuilder>();
+		if (gameData.spotifyUrl)
+			row.addComponents(
+				new ButtonBuilder()
+					.setLabel("Spotify")
+					.setStyle(ButtonStyle.Link)
+					.setURL(gameData.spotifyUrl)
+					.setEmoji("🟢")
+			);
+		if (gameData.appleMusicUrl)
+			row.addComponents(
+				new ButtonBuilder()
+					.setLabel("Apple Music")
+					.setStyle(ButtonStyle.Link)
+					.setURL(gameData.appleMusicUrl)
+					.setEmoji("🍎")
+			);
+		if (gameData.youtubeUrl)
+			row.addComponents(
+				new ButtonBuilder()
+					.setLabel("YouTube")
+					.setStyle(ButtonStyle.Link)
+					.setURL(gameData.youtubeUrl)
+					.setEmoji("📺")
+			);
+		row.addComponents(
+			new ButtonBuilder()
+				.setLabel("Genius")
+				.setStyle(ButtonStyle.Link)
+				.setURL(gameData.url)
+				.setEmoji("📜")
+		);
+		return [row];
+	};
+
 	msgCol.on("end", (_, reason) => {
 		activeGames.delete(channel.id);
 		(async () => {
 			await gameMsg.edit({ components: [] }).catch(() => {});
-
 			if (reason === "winner" && winner) {
+				console.log(
+					`[GAME] 🏆 Victoire: ${winner.author.tag} (${gameData.title})`
+				);
 				const winEmbed = new EmbedBuilder()
 					.setTitle(
 						opponent
@@ -459,8 +505,11 @@ async function runGame(
 					)
 					.setThumbnail(gameData.cover)
 					.setColor(0x00ff00);
-				winner?.reply({ embeds: [winEmbed] }).catch(() => {});
+				winner
+					?.reply({ embeds: [winEmbed], components: getEndGameComponents() })
+					.catch(() => {});
 			} else if (reason === "cancel") {
+				console.log(`[GAME] ❌ Partie annulée/abandonnée`);
 				const loseEmbed = new EmbedBuilder()
 					.setTitle(opponent ? "🏳️ Duel annulé" : "🚨 Partie Abandonnée")
 					.setDescription(
@@ -468,7 +517,9 @@ async function runGame(
 					)
 					.setThumbnail(gameData.cover)
 					.setColor(0xff0000);
-				channel.send({ embeds: [loseEmbed] }).catch(() => {});
+				channel
+					.send({ embeds: [loseEmbed], components: getEndGameComponents() })
+					.catch(() => {});
 			}
 		})();
 	});
