@@ -1,0 +1,18 @@
+version: '3.8' # La version de la spécification Docker Compose
+
+services:
+  bot: # Le nom de votre service (vous pouvez le nommer comme vous voulez, ex: "discord_bot")
+    build: . # Indique à Docker Compose de construire l'image à partir du Dockerfile dans le répertoire courant
+    container_name: socreveto1989-bot-container # Nomme votre conteneur pour une identification facile
+    restart: unless-stopped # Le conteneur redémarrera automatiquement sauf s'il est explicitement arrêté
+    env_file: # Indique à Docker Compose de charger les variables d'environnement depuis ce fichier
+      - .env # Le chemin vers votre fichier .env
+
+    # Si vous avez besoin de passer d'autres variables qui ne sont pas dans le .env
+    # (moins commun mais possible)
+    # environment:
+    #   - AUTRE_VARIABLE=VALEUR
+
+    # Si votre bot avait besoin d'exposer des ports (ex: pour une API web)
+    # ports:
+    #   - "3000:3000"
