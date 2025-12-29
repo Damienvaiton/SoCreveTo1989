@@ -25,11 +25,6 @@ export interface GameData {
 	cover: string;
 	allLines: string[];
 	startIndex: number;
-	// Liens Streaming
-	spotifyUrl?: string;
-	appleMusicUrl?: string;
-	soundcloudUrl?: string;
-	youtubeUrl?: string;
 }
 
 export interface GapFillData {
@@ -63,31 +58,197 @@ const ALBUM_ORDER = [
 	"evermore",
 	"Midnights",
 	"The Tortured Poets Department",
-	"The Life Of A Showgirl",
+	"Singles & Holiday",
 ];
 
-// --- HELPERS ---
+// --- HISTORIQUE DE TIRAGE (Gestion en mémoire avec Timeout) ---
+const RECENT_SONGS = new Set<string>();
+const HISTORY_TIMEOUT_MS = 10 * 60 * 1000; // 10 minutes en millisecondes
+const MAX_HISTORY_SIZE = 15; // Taille fixe de l'historique
+let lastActivityTimestamp = Date.now(); // Horodatage de la dernière partie
 
-async function searchSongOnGenius(query: string): Promise<any | null> {
+/**
+ * Normalise un titre et le stocke dans l'historique.
+ * Nettoie l'historique si la taille maximale est atteinte, et met à jour l'horodatage.
+ */
+function updateRecentSongs(title: string) {
+	const normalizedTitle = normalizeTitle(title);
+	RECENT_SONGS.add(normalizedTitle);
+
+	// Mise à jour de l'horodatage
+	lastActivityTimestamp = Date.now();
+
+	if (RECENT_SONGS.size > MAX_HISTORY_SIZE) {
+		console.log(
+			`[HISTORY] 🧹 Nettoyage de l'historique (${RECENT_SONGS.size} > ${MAX_HISTORY_SIZE}).`
+		);
+
+		// On garde les éléments les plus récents (les 'MAX_HISTORY_SIZE' derniers)
+		const songsArray = Array.from(RECENT_SONGS);
+		const newSongsArray = songsArray.slice(
+			songsArray.length - MAX_HISTORY_SIZE
+		);
+		RECENT_SONGS.clear();
+		newSongsArray.forEach((song) => RECENT_SONGS.add(song));
+	}
+}
+
+/**
+ * Vérifie si le délai d'inactivité a été dépassé (10 minutes) et réinitialise l'historique si nécessaire.
+ */
+function checkAndResetHistory() {
+	const currentTime = Date.now();
+	if (currentTime - lastActivityTimestamp > HISTORY_TIMEOUT_MS) {
+		console.log(
+			`[HISTORY] ⏲️ Réinitialisation de l'historique (Inactivité > 10 min).`
+		);
+		RECENT_SONGS.clear();
+	}
+}
+
+// --- OUTILS DE NETTOYAGE ---
+
+export const normalizeTitle = (title: string) => {
+	let clean = title
+		.toLowerCase()
+		.replace(/[\u2018\u2019`]/g, "'")
+		.replace(
+			/\s*([(\[\-]|\s)(taylor's version|from the vault|10 minute version|remix|live).*?([)\]]|$)/gi,
+			""
+		)
+		.trim();
+
+	// Prédictif/Tolérance : Remplacement des symboles courants
+	clean = clean.replace(/&/g, "and").replace(/@/g, "at").replace(/ñ/g, "n");
+
+	// Suppression de la ponctuation pour la comparaison
+	clean = clean.replace(/[.,?!:;“”'"\/]/g, "");
+
+	return clean.replace(/\s+/g, " ").trim();
+};
+
+// Fonction pour échapper les caractères spéciaux dans la Regex
+function escapeRegExp(string: string) {
+	return string.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+}
+
+// --- IMPLEMENTATION LEVENSHTEIN EN JS PUR ---
+/**
+ * Calcule la distance de Levenshtein (nombre d'éditions pour passer de s1 à s2).
+ */
+export function levenshteinDistance(s1: string, s2: string): number {
+	const len1 = s1.length;
+	const len2 = s2.length;
+
+	const d: number[][] = [];
+
+	for (let i = 0; i <= len1; i++) {
+		d[i] = [i];
+	}
+	for (let j = 0; j <= len2; j++) {
+		d[0][j] = j;
+	}
+
+	for (let i = 1; i <= len1; i++) {
+		for (let j = 1; j <= len2; j++) {
+			const cost = s1[i - 1] === s2[j - 1] ? 0 : 1;
+			d[i][j] = Math.min(
+				d[i - 1][j] + 1,
+				d[i][j - 1] + 1,
+				d[i - 1][j - 1] + cost
+			);
+		}
+	}
+
+	return d[len1][len2];
+}
+
+// --- LOGIQUE DE RECHERCHE GENIUS ---
+
+async function searchSongOnGenius(
+	query: string,
+	expectedTitle: string
+): Promise<any | null> {
 	try {
 		const res = await axios.get(`${GENIUS_API_URL}/search`, {
 			params: { q: query },
 			headers: GENIUS_HEADERS,
 		});
-		return res.data.response.hits[0]?.result || null;
-	} catch (err) {
-		return null;
-	}
-}
 
-async function getSongMediaData(songId: number): Promise<any> {
-	try {
-		const res = await axios.get(`${GENIUS_API_URL}/songs/${songId}`, {
-			headers: GENIUS_HEADERS,
+		const hits = res.data.response.hits || [];
+		if (hits.length === 0) return null;
+
+		const expectedNormalized = normalizeTitle(expectedTitle);
+
+		// --- PHASE 1 : RECHERCHE STRICTE (REGEX) ---
+
+		const strictMatch = hits.find((hit: any) => {
+			const result = hit.result;
+			const isTaylorSwift = result.primary_artist.name.includes("Taylor Swift");
+			const resultNormalized = normalizeTitle(result.title);
+
+			const regex = new RegExp(
+				`^${escapeRegExp(expectedNormalized)}($|[^a-z0-9])`,
+				"i"
+			);
+
+			return isTaylorSwift && regex.test(resultNormalized);
 		});
-		return res.data.response.song.media || [];
+
+		if (strictMatch) {
+			console.log(
+				`[GENIUS] 🎯 Match STRICT confirmé : "${strictMatch.result.title}"`
+			);
+			return strictMatch.result;
+		}
+
+		// --- PHASE 2 : RECHERCHE FLOUE (Distance de Levenshtein) ---
+
+		console.warn(
+			`[GENIUS] ⚠️ Match strict échoué pour "${expectedTitle}". Tentative de recherche floue...`
+		);
+
+		let bestMatch = null;
+		let minDistance = Infinity;
+
+		const taylorHits = hits.filter((hit: any) =>
+			hit.result.primary_artist.name.includes("Taylor Swift")
+		);
+
+		for (const hit of taylorHits) {
+			const result = hit.result;
+			const resultNormalized = normalizeTitle(result.title);
+
+			const distance = levenshteinDistance(
+				expectedNormalized,
+				resultNormalized
+			);
+
+			if (distance < minDistance) {
+				minDistance = distance;
+				bestMatch = result;
+			}
+		}
+
+		const titleLength = expectedNormalized.length;
+		const acceptableThreshold = Math.min(3, Math.ceil(titleLength * 0.3));
+
+		if (bestMatch && minDistance <= acceptableThreshold) {
+			console.log(
+				`[GENIUS] 🧩 Match FLOU trouvé. Titre: "${bestMatch.title}", Distance: ${minDistance}`
+			);
+			return bestMatch;
+		}
+
+		// --- PHASE 3 : REPLI PAR DÉFAUT ---
+
+		console.warn(
+			`[GENIUS] ❌ Aucun match fiable trouvé. Retourne le 1er résultat de l'API.`
+		);
+		return hits[0]?.result || null;
 	} catch (err) {
-		return [];
+		console.error("[GENIUS] Erreur recherche :", err);
+		return null;
 	}
 }
 
@@ -158,18 +319,98 @@ export async function getRandomSongSnippet(
 
 		if (eligibleAlbums.length === 0) return null;
 
-		const randomAlbumName =
-			eligibleAlbums[Math.floor(Math.random() * eligibleAlbums.length)];
-		const songsList = artistObj.albums[randomAlbumName];
-		if (!songsList || songsList.length === 0) return null;
+		const albumCount = eligibleAlbums.length;
+		const useHistory = albumCount > 4;
 
-		const randomSongTitle =
-			songsList[Math.floor(Math.random() * songsList.length)];
-		console.log(`[GUESS] 🎲 Tirage: ${randomSongTitle}`);
+		if (useHistory) {
+			// --- VÉRIFICATION ET RÉINITIALISATION DE L'HISTORIQUE ---
+			checkAndResetHistory();
+			console.log(`[HISTORY] Historique ACTIF (Albums: ${albumCount}).`);
+
+			// --- LOG D'AFFICHAGE DE L'HISTORIQUE (Juste avant le tirage) ---
+			console.log("-----------------------------------------");
+			console.log(`[HISTORY] État: [ ${Array.from(RECENT_SONGS).join(", ")} ]`);
+			console.log("-----------------------------------------");
+			// ------------------------------------------------------------------------
+		} else {
+			console.log(
+				`[HISTORY] Historique INACTIF (Albums: ${albumCount}). Rotation libre.`
+			);
+		}
+
+		let songPool: { title: string; album: string; normalized: string }[] = [];
+		for (const albumName of eligibleAlbums) {
+			const songs = artistObj.albums[albumName];
+			if (songs && songs.length > 0) {
+				for (const song of songs) {
+					songPool.push({
+						title: song,
+						album: albumName,
+						normalized: normalizeTitle(song),
+					});
+				}
+			}
+		}
+
+		if (songPool.length === 0) return null;
+
+		// --- LOGIQUE D'EXCLUSION DE L'HISTORIQUE (Conditionnelle) ---
+		let randomSelection: {
+			title: string;
+			album: string;
+			normalized: string;
+		} | null = null;
+
+		if (useHistory) {
+			let attempts = 0;
+			const MAX_ATTEMPTS = songPool.length * 2;
+
+			while (attempts < MAX_ATTEMPTS) {
+				attempts++;
+
+				const selection = songPool[Math.floor(Math.random() * songPool.length)];
+
+				if (!RECENT_SONGS.has(selection.normalized)) {
+					randomSelection = selection;
+					break;
+				}
+
+				if (attempts === MAX_ATTEMPTS) {
+					console.warn(
+						`[HISTORY] ❌ Échec du tirage GUESS après ${MAX_ATTEMPTS} tentatives. Forçage du nettoyage.`
+					);
+					// On vide l'historique et on accepte le tirage pour ne pas bloquer le jeu
+					RECENT_SONGS.clear();
+					randomSelection =
+						songPool[Math.floor(Math.random() * songPool.length)];
+					break;
+				}
+			}
+		} else {
+			// Pas d'historique : tirage simple
+			randomSelection = songPool[Math.floor(Math.random() * songPool.length)];
+		}
+
+		if (!randomSelection) {
+			console.error(
+				"[GUESS] Erreur critique: Impossible de sélectionner une chanson."
+			);
+			return null;
+		}
+
+		const randomSongTitle = randomSelection.title;
+		const randomAlbumName = randomSelection.album;
+
+		console.log(
+			`[GUESS] 🎲 Tirage: "${randomSongTitle}" (Album: ${randomAlbumName})`
+		);
+		// ---------------------------------------------------
 
 		const songData = await searchSongOnGenius(
-			`${artistObj.artist} ${randomSongTitle}`
+			`${artistObj.artist} ${randomSongTitle}`,
+			randomSongTitle
 		);
+
 		if (!songData) return null;
 
 		const fullLyrics = await extractLyricsFromPage(songData.url);
@@ -177,8 +418,13 @@ export async function getRandomSongSnippet(
 
 		const snippetSize = linesRequested || 2;
 		const lines = fullLyrics.split("\n").filter((l) => l.trim().length > 0);
-		if (lines.length <= snippetSize + 1)
+
+		if (lines.length <= snippetSize + 1) {
+			console.warn(
+				`[GUESS] ⚠️ Titre ignoré : "${songData.title}" a trop peu de lignes (${lines.length}). Nouveau tirage...`
+			);
 			return getRandomSongSnippet(linesRequested, allowedAlbums);
+		}
 
 		const randomStart = Math.floor(
 			Math.random() * (lines.length - snippetSize)
@@ -187,17 +433,10 @@ export async function getRandomSongSnippet(
 			.slice(randomStart, randomStart + snippetSize)
 			.join("\n");
 
-		if (snippet.toLowerCase().includes(songData.title.toLowerCase()))
-			return getRandomSongSnippet(linesRequested, allowedAlbums);
-
-		// Récupération des liens
-		const mediaData = await getSongMediaData(songData.id);
-		const spotify = mediaData.find((m: any) => m.provider === "spotify")?.url;
-		const apple = mediaData.find((m: any) => m.provider === "apple_music")?.url;
-		const soundcloud = mediaData.find(
-			(m: any) => m.provider === "soundcloud"
-		)?.url;
-		const youtube = mediaData.find((m: any) => m.provider === "youtube")?.url;
+		// Mise à jour de l'historique SEULEMENT si l'historique est actif
+		if (useHistory) {
+			updateRecentSongs(randomSelection.title);
+		}
 
 		return {
 			snippet: snippet,
@@ -208,10 +447,6 @@ export async function getRandomSongSnippet(
 			cover: songData.song_art_image_url || songData.header_image_thumbnail_url,
 			allLines: lines,
 			startIndex: randomStart,
-			spotifyUrl: spotify,
-			appleMusicUrl: apple,
-			soundcloudUrl: soundcloud,
-			youtubeUrl: youtube,
 		};
 	} catch (error) {
 		console.error("Erreur jeu :", error);
@@ -231,27 +466,110 @@ export async function getGapFillData(
 		const artistsData = JSON.parse(rawData);
 		const artistObj = artistsData[0];
 
-		let randomAlbumName: string;
-		let songsList: string[];
-		const albumKeys = Object.keys(artistObj.albums);
+		const allAlbumKeys = Object.keys(artistObj.albums);
+		let eligibleAlbums: string[] = [];
 
 		if (albumFilter && albumFilter !== "Tous") {
-			const foundKey = albumKeys.find((key) =>
+			const foundKey = allAlbumKeys.find((key) =>
 				key.toLowerCase().includes(albumFilter.toLowerCase())
 			);
 			if (!foundKey) return null;
-			randomAlbumName = foundKey;
+			eligibleAlbums = [foundKey];
 		} else {
-			randomAlbumName = albumKeys[Math.floor(Math.random() * albumKeys.length)];
+			eligibleAlbums = allAlbumKeys;
 		}
-		songsList = artistObj.albums[randomAlbumName];
-		const randomSongTitle =
-			songsList[Math.floor(Math.random() * songsList.length)];
 
-		console.log(`[FILL] 🎲 Tirage: ${randomSongTitle}`);
+		if (eligibleAlbums.length === 0) return null;
+
+		const albumCount = eligibleAlbums.length;
+		const useHistory = albumCount > 4;
+
+		if (useHistory) {
+			// --- VÉRIFICATION ET RÉINITIALISATION DE L'HISTORIQUE ---
+			checkAndResetHistory();
+			console.log(`[HISTORY] Historique ACTIF (Albums: ${albumCount}).`);
+
+			// --- LOG D'AFFICHAGE DE L'HISTORIQUE (Juste avant le tirage) ---
+			console.log("-----------------------------------------");
+			console.log(`[HISTORY] État: [ ${Array.from(RECENT_SONGS).join(", ")} ]`);
+			console.log("-----------------------------------------");
+			// ------------------------------------------------------------------------
+		} else {
+			console.log(
+				`[HISTORY] Historique INACTIF (Albums: ${albumCount}). Rotation libre.`
+			);
+		}
+
+		let songPool: { title: string; album: string; normalized: string }[] = [];
+		for (const albumName of eligibleAlbums) {
+			const songs = artistObj.albums[albumName];
+			if (songs && songs.length > 0) {
+				for (const song of songs) {
+					songPool.push({
+						title: song,
+						album: albumName,
+						normalized: normalizeTitle(song),
+					});
+				}
+			}
+		}
+
+		if (songPool.length === 0) return null;
+
+		// --- LOGIQUE D'EXCLUSION DE L'HISTORIQUE pour /fill (Conditionnelle) ---
+		let randomSelection: {
+			title: string;
+			album: string;
+			normalized: string;
+		} | null = null;
+
+		if (useHistory) {
+			let attempts = 0;
+			const MAX_ATTEMPTS = songPool.length * 2;
+
+			while (attempts < MAX_ATTEMPTS) {
+				attempts++;
+
+				const selection = songPool[Math.floor(Math.random() * songPool.length)];
+
+				if (!RECENT_SONGS.has(selection.normalized)) {
+					randomSelection = selection;
+					break;
+				}
+
+				if (attempts === MAX_ATTEMPTS) {
+					console.warn(
+						`[HISTORY] ❌ Échec du tirage FILL après ${MAX_ATTEMPTS} tentatives. Forçage du nettoyage.`
+					);
+					RECENT_SONGS.clear();
+					randomSelection =
+						songPool[Math.floor(Math.random() * songPool.length)];
+					break;
+				}
+			}
+		} else {
+			// Pas d'historique : tirage simple
+			randomSelection = songPool[Math.floor(Math.random() * songPool.length)];
+		}
+
+		if (!randomSelection) {
+			console.error(
+				"[FILL] Erreur critique: Impossible de sélectionner une chanson."
+			);
+			return null;
+		}
+
+		const randomSongTitle = randomSelection.title;
+		const randomAlbumName = randomSelection.album;
+
+		console.log(`[FILL] 🎲 Tirage: "${randomSongTitle}"`);
+		// ---------------------------------------------------
+
 		const songData = await searchSongOnGenius(
-			`${artistObj.artist} ${randomSongTitle}`
+			`${artistObj.artist} ${randomSongTitle}`,
+			randomSongTitle
 		);
+
 		if (!songData) return null;
 		const fullLyrics = await extractLyricsFromPage(songData.url);
 		if (!fullLyrics) return null;
@@ -298,6 +616,11 @@ export async function getGapFillData(
 			words[index] = "________";
 		});
 
+		// Mise à jour de l'historique SEULEMENT si l'historique est actif
+		if (useHistory) {
+			updateRecentSongs(randomSelection.title);
+		}
+
 		return {
 			songTitle: songData.title,
 			artist: songData.primary_artist.name,
@@ -315,7 +638,7 @@ export async function getGapFillData(
 
 // --- FONCTION 3 : RECHERCHE (/lyrics) ---
 export async function fetchLyrics(query: string): Promise<LyricsResult | null> {
-	const songData = await searchSongOnGenius(query);
+	const songData = await searchSongOnGenius(query, query);
 	if (!songData) return null;
 	const lyricsText = await extractLyricsFromPage(songData.url);
 	if (!lyricsText) return null;

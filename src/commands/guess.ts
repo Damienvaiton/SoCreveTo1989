@@ -9,16 +9,17 @@ import {
 	TextChannel,
 	StringSelectMenuBuilder,
 	StringSelectMenuOptionBuilder,
-	MessageComponentInteraction,
 	ModalBuilder,
 	TextInputBuilder,
 	TextInputStyle,
 	MessageFlags,
 	User,
+	MessageComponentInteraction,
 } from "discord.js";
 import {
 	getRandomSongSnippet,
 	getAvailableAlbums,
+	normalizeTitle,
 } from "../services/lyricsService.js";
 
 // --- SYSTEME DE MEMOIRE ---
@@ -34,6 +35,23 @@ const CONFIG_EXPIRATION_MS = 5 * 60 * 1000;
 // --- GESTION DES PARTIES EN COURS ---
 const activeGames = new Set<string>();
 
+// --- GESTION DES SERIES DE VICTOIRES (STREAKS) ---
+// Key: channelId, Value: { playerId: string, count: number }
+interface WinStreak {
+	playerId: string;
+	count: number;
+}
+const winStreaks = new Map<string, WinStreak>();
+
+// --- GESTION DES SERIES RAPIDES (MULTI-KILLS) ---
+// Key: channelId, Value: { playerId: string, count: number }
+interface RapidStreak {
+	playerId: string;
+	count: number;
+}
+const rapidStreaks = new Map<string, RapidStreak>();
+const RAPID_STREAK_WINDOW_MS = 10000; // 10 secondes maximum pour un "Fast Kill"
+
 // IDs
 const ID_CONF_MODE = "conf_mode";
 const ID_CONF_LINES = "conf_lines";
@@ -45,10 +63,96 @@ const ID_GAME_CANCEL = "game_cancel";
 const ID_GAME_HINT_ALBUM = "game_hint_album";
 const ID_GAME_HINT_PENDU = "game_hint_pendu";
 const ID_GAME_HINT_LYRICS = "game_hint_lyrics";
+const ID_GAME_REPLAY = "game_replay";
 
-// --- OUTILS DE NETTOYAGE ---
+// --- SEUILS D'ANNONCES POUR LES SÉRIES DE VICTOIRES (STREAK) - FR SEULEMENT ---
+const STREAK_ANNOUNCEMENTS = [
+	{
+		threshold: 13, // 🌟 EASTER EGG TAYLOR 🌟
+		message: "✨ TAYLOR MAGIQUE ! ✨",
+		description:
+			"**${userTag}** est rentré dans une nouvelle Era",
+		color: 0xffa500, // Or/Orange pour l'impact
+	},
+	{
+		threshold: 8,
+		message: "🔥 LÉGENDAIRE !",
+		description: "**${userTag}** est légendaire ",
+		color: 0xffc0cb, // Rose
+	},
+	{
+		threshold: 7,
+		message: "🌟 DIVIN !",
+		description: "**${userTag}** est divin(e) ",
+		color: 0xffc0cb, // Rose
+	},
+	{
+		threshold: 6,
+		message: "👑 DOMINE !",
+		description: "**${userTag}** domine",
+		color: 0xffc0cb, // Rose
+	},
+	{
+		threshold: 5,
+		message: "🛡️ INVINCIBLE !",
+		description: "**${userTag}** est invincible",
+		color: 0xffc0cb, // Rose
+	},
+	{
+		threshold: 4,
+		message: "💥 CARNAGE !",
+		description: "**${userTag}** fait un carnage",
+		color: 0xffc0cb, // Rose
+	},
+	{
+		threshold: 3,
+		message: "🔪 MEURTRE EN SÉRIE !",
+		description: "Série pour **${userTag}**",
+		color: 0xffc0cb, // Rose
+	},
+];
+
+// --- SEUILS D'ANNONCES RAPIDES (MULTI-KILLS) - FR SEULEMENT ---
+const MULTIKILL_ANNOUNCEMENTS = [
+	{
+		threshold: 5,
+		message: "👑 QUINTUPLÉ !",
+		description: "La rapidité de **${userTag}** est divine !",
+	},
+	{
+		threshold: 4,
+		message: "💥 QUADRUPLÉ !",
+		description: "**${userTag}** enchaîne très vite !",
+	},
+	{
+		threshold: 3,
+		message: "🔪 TRIPLÉ !",
+		description: "**${userTag}** a été très rapide !",
+	},
+	{
+		threshold: 2,
+		message: "⚡ DOUBLÉ !",
+		description: "**${userTag}** a été rapide !",
+	},
+];
+
+// --- OUTILS DE CRÉATION D'EMBED D'ANNONCE ---
+function createAnnouncementEmbed(
+	title: string,
+	description: string,
+	color: number
+): EmbedBuilder {
+	return new EmbedBuilder()
+		.setTitle(title)
+		.setDescription(description)
+		.setColor(color);
+}
+
+// --- OUTILS DE NETTOYAGE ROBUSTE (Local, mais doit être cohérent avec le service) ---
+
 const cleanTitleForGame = (title: string) => {
 	let clean = title.replace(/[\u2018\u2019`]/g, "'");
+
 	const patternsToRemove = [
 		"Taylor's Version",
 		"From The Vault",
@@ -60,6 +164,7 @@ const cleanTitleForGame = (title: string) => {
 		"Sad Girl Autumn Version",
 		"Recorded at",
 	];
+
 	let previous = "";
 	while (clean !== previous) {
 		previous = clean;
@@ -105,10 +210,8 @@ export default {
 				flags: MessageFlags.Ephemeral,
 			});
 		const channel = interaction.channel as TextChannel;
-
 		const opponent = interaction.options.getUser("duel");
 
-		// LOG INITIAL
 		console.log(
 			`[CMD] 👤 ${interaction.user.tag} lance /guess dans #${channel.name} ${
 				opponent ? `(Duel vs ${opponent.tag})` : ""
@@ -129,9 +232,6 @@ export default {
 		}
 
 		if (activeGames.has(channel.id)) {
-			console.log(
-				`[CMD] 🚫 Partie refusée (déjà en cours) dans #${channel.name}`
-			);
 			return interaction.reply({
 				content: "🚫 **Une partie est déjà en cours !**",
 				flags: MessageFlags.Ephemeral,
@@ -143,7 +243,6 @@ export default {
 
 		try {
 			const allAlbums = getAvailableAlbums();
-
 			let config = {
 				selectedAlbums: [...allAlbums],
 				lines: 2,
@@ -244,7 +343,6 @@ export default {
 			confCollector.on("collect", async (i) => {
 				if (i.customId === ID_CONF_MODE && i.isStringSelectMenu()) {
 					config.selectedAlbums = i.values;
-					console.log(`[CONF] 💿 Albums modifiés: ${i.values.length} sélec.`);
 					saveConfigToCache();
 					await i.update(renderDashboard());
 				} else if (i.customId === ID_CONF_LINES) {
@@ -272,19 +370,16 @@ export default {
 						});
 						const val = parseInt(sub.fields.getTextInputValue(ID_INPUT_LINES));
 						config.lines = isNaN(val) || val < 1 || val > 5 ? 2 : val;
-						console.log(`[CONF] 📝 Lignes modifiées: ${config.lines}`);
 						saveConfigToCache();
 						await sub.deferUpdate();
 						await interaction.editReply(renderDashboard());
 					} catch (e) {}
 				} else if (i.customId === ID_CONF_HINTS) {
 					config.hintsEnabled = !config.hintsEnabled;
-					console.log(`[CONF] 💡 Indices: ${config.hintsEnabled}`);
 					saveConfigToCache();
 					await i.update(renderDashboard());
 				} else if (i.customId === ID_CONF_START) {
 					confCollector.stop("start");
-					console.log(`[CONF] 🚀 Lancement demandé par ${i.user.tag}`);
 					await i.update({
 						content: opponent
 							? `⚔️ **Duel lancé !**`
@@ -292,13 +387,13 @@ export default {
 						embeds: [],
 						components: [],
 					});
-					runGame(channel, config, interaction.user, opponent);
+					// Lancement initial: la série rapide est nulle
+					runGame(channel, config, interaction.user, opponent, null);
 				}
 			});
 
 			confCollector.on("end", (_, reason) => {
 				if (reason !== "start") {
-					console.log(`[CONF] ⏱️ Timeout config.`);
 					activeGames.delete(channel.id);
 					interaction
 						.editReply({ content: "⏱️ Temps écoulé.", components: [] })
@@ -312,12 +407,27 @@ export default {
 	},
 };
 
+// MODIFIE LA SIGNATURE DE runGame pour accepter l'état initial de la série rapide
 async function runGame(
 	channel: TextChannel,
 	config: { selectedAlbums: string[]; lines: number; hintsEnabled: boolean },
 	launcher: User,
-	opponent: User | null
+	opponent: User | null,
+	initialRapidStreak?: RapidStreak | null // NOUVEAU PARAMÈTRE
 ) {
+	if (!activeGames.has(channel.id)) activeGames.add(channel.id);
+
+	// Initialisation/persistance de la série rapide
+	if (
+		initialRapidStreak &&
+		initialRapidStreak.count >= 1 &&
+		initialRapidStreak.playerId
+	) {
+		rapidStreaks.set(channel.id, initialRapidStreak);
+	} else {
+		rapidStreaks.delete(channel.id);
+	}
+
 	let startMessage = opponent
 		? `⚔️ **DUEL** : ${launcher} 🆚 ${opponent} !`
 		: `🎶 *Recherche...*`;
@@ -329,7 +439,6 @@ async function runGame(
 	);
 
 	if (!gameData) {
-		console.log(`[GAME] ❌ Échec chargement chanson`);
 		activeGames.delete(channel.id);
 		return loadingMsg.edit("❌ Erreur : Aucune chanson trouvée.");
 	}
@@ -402,6 +511,11 @@ async function runGame(
 	};
 
 	const gameMsg = await loadingMsg.edit(renderGame());
+
+	// --- CHRONOMÉTRAGE DE LA RÉPONSE (START) ---
+	const startTime = Date.now();
+	// ------------------------------------------
+
 	const msgCol = channel.createMessageCollector({
 		filter: (m) => {
 			if (m.author.bot) return false;
@@ -425,63 +539,55 @@ async function runGame(
 			return;
 		}
 		if (i.customId === ID_GAME_HINT_ALBUM) {
-			console.log(`[GAME] 💡 Indice Album par ${i.user.tag}`);
 			hints.album = true;
 		}
 		if (i.customId === ID_GAME_HINT_PENDU) {
-			console.log(`[GAME] 💡 Indice Pendu par ${i.user.tag}`);
 			hints.pendu = true;
 		}
 		if (i.customId === ID_GAME_HINT_LYRICS) {
-			console.log(`[GAME] 💡 Indice Suite par ${i.user.tag}`);
 			currentLines++;
 			hints.lyricsAdded++;
 		}
 		await i.update(renderGame());
 	});
 
+	// --- CORRECTION CRITIQUE DE LA VALIDATION DE LA RÉPONSE ---
 	msgCol.on("collect", (m) => {
+		// 1. Nettoyer la réponse de l'utilisateur (en utilisant la fonction locale qui est robuste)
 		const guess = normalizeString(m.content);
-		const answer = normalizeString(gameData.title);
-		if (guess === answer || (guess.length > 4 && answer.includes(guess))) {
+		// 2. Nettoyer le titre correct (en utilisant la fonction exportée du service)
+		const answer = normalizeTitle(gameData.title);
+
+		// 3. Validation : La réponse doit être strictement égale au titre normalisé.
+		if (guess === answer) {
+			// --- LOGIQUE DE GESTION DE LA SÉRIE RAPIDE (Multi-Kill Stop Reason) ---
+			const timeElapsed = Date.now() - startTime;
+			const isFastKill = timeElapsed <= RAPID_STREAK_WINDOW_MS;
+
+			const stopReason = isFastKill ? "fast_winner" : "winner";
+			// ----------------------------------------------------------------------
+
 			winner = m;
-			msgCol.stop("winner");
+			msgCol.stop(stopReason);
 			btnCol.stop();
 		}
 	});
+	// -----------------------------------------------------------
 
 	const getEndGameComponents = () => {
 		const row = new ActionRowBuilder<ButtonBuilder>();
-		if (gameData.spotifyUrl)
-			row.addComponents(
-				new ButtonBuilder()
-					.setLabel("Spotify")
-					.setStyle(ButtonStyle.Link)
-					.setURL(gameData.spotifyUrl)
-					.setEmoji("🟢")
-			);
-		if (gameData.appleMusicUrl)
-			row.addComponents(
-				new ButtonBuilder()
-					.setLabel("Apple Music")
-					.setStyle(ButtonStyle.Link)
-					.setURL(gameData.appleMusicUrl)
-					.setEmoji("🍎")
-			);
-		if (gameData.youtubeUrl)
-			row.addComponents(
-				new ButtonBuilder()
-					.setLabel("YouTube")
-					.setStyle(ButtonStyle.Link)
-					.setURL(gameData.youtubeUrl)
-					.setEmoji("📺")
-			);
 		row.addComponents(
 			new ButtonBuilder()
-				.setLabel("Genius")
+				.setLabel("Voir sur Genius")
 				.setStyle(ButtonStyle.Link)
 				.setURL(gameData.url)
 				.setEmoji("📜")
+		);
+		row.addComponents(
+			new ButtonBuilder()
+				.setCustomId(ID_GAME_REPLAY)
+				.setLabel("🔄 Rejouer")
+				.setStyle(ButtonStyle.Secondary)
 		);
 		return [row];
 	};
@@ -490,37 +596,199 @@ async function runGame(
 		activeGames.delete(channel.id);
 		(async () => {
 			await gameMsg.edit({ components: [] }).catch(() => {});
-			if (reason === "winner" && winner) {
-				console.log(
-					`[GAME] 🏆 Victoire: ${winner.author.tag} (${gameData.title})`
-				);
-				const winEmbed = new EmbedBuilder()
+			let endEmbed: EmbedBuilder;
+
+			// --- DÉCLARATIONS DE SÉRIE ---
+			const currentStreak = winStreaks.get(channel.id) || {
+				playerId: "",
+				count: 0,
+			};
+			let currentRapid = rapidStreaks.get(channel.id) || {
+				playerId: "",
+				count: 0,
+			};
+			const channelId = channel.id;
+
+			const isFastKill = reason === "fast_winner";
+
+			// État à passer à la prochaine partie (initialisé à null si non conservé)
+			let finalRapidStreak: RapidStreak | null = null;
+
+			if ((reason === "winner" || reason === "fast_winner") && winner) {
+				// --- 1. GESTION DE LA SÉRIE CONSÉCUTIVE (STREAK: Killing Spree, etc.) ---
+				if (winner.author.id === currentStreak.playerId) {
+					currentStreak.count++;
+				} else {
+					currentStreak.playerId = winner.author.id;
+					currentStreak.count = 1;
+				}
+				winStreaks.set(channelId, currentStreak);
+
+				// --- 2. GESTION DE LA SÉRIE RAPIDE (MULTI-KILL: Doublé, Triplé, etc.) ---
+				if (isFastKill && winner.author.id === currentRapid.playerId) {
+					currentRapid.count++;
+				} else if (isFastKill) {
+					// Nouveau début de série rapide
+					currentRapid = { playerId: winner.author.id, count: 1 };
+				} else {
+					// Victoire lente, réinitialise la série rapide
+					rapidStreaks.delete(channelId);
+					currentRapid = { playerId: "", count: 0 }; // Réinitialisation de l'objet pour les vérifs suivantes
+				}
+
+				// Si la série rapide est valide (> 1 ou 1 rapide qui vient de commencer), on la prépare pour la relance
+				if (currentRapid.count >= 1) {
+					rapidStreaks.set(channelId, currentRapid);
+					finalRapidStreak = currentRapid;
+				}
+
+				// --- CONTRUCTION DE L'EMBED DE RÉSULTAT ---
+				endEmbed = new EmbedBuilder()
 					.setTitle(
 						opponent
 							? `🏆 ${winner.author.username} remporte le duel !`
 							: "🎉 Bonne réponse !"
 					)
 					.setDescription(
-						`Bravo ${winner?.author} !\nC'était **${gameData.title}**\nAlbum : *${gameData.album}*`
+						`Bravo ${winner.author} !\nC'était **${gameData.title}**\nAlbum : *${gameData.album}*`
 					)
 					.setThumbnail(gameData.cover)
 					.setColor(0x00ff00);
-				winner
-					?.reply({ embeds: [winEmbed], components: getEndGameComponents() })
+
+				// Envoi de l'Embed de résultat
+				const replyMessage = await winner
+					.reply({ embeds: [endEmbed], components: getEndGameComponents() })
 					.catch(() => {});
-			} else if (reason === "cancel") {
-				console.log(`[GAME] ❌ Partie annulée/abandonnée`);
-				const loseEmbed = new EmbedBuilder()
+
+				console.log(
+					`[GAME] 🏆 Victoire: ${winner.author.tag} (Série: ${currentStreak.count}, Rapide: ${currentRapid.count})`
+				);
+
+				// --- GESTION DES ANNONCES DANS UN NOUVEL EMBED ---
+				let announcementEmbed: EmbedBuilder | null = null;
+
+				// CRÉATION DE LA MENTION UTILISATEUR POUR LE TAG DANS L'EMBED
+				const userTag = winner.author.toString();
+
+				// A) Annonce de la Série Consécutive (Killing Spree)
+				const streakAnnouncement = STREAK_ANNOUNCEMENTS.sort(
+					(a, b) => b.threshold - a.threshold
+				).find((a) => a.threshold <= currentStreak.count);
+
+				if (streakAnnouncement) {
+					const title = streakAnnouncement.message;
+					// Remplacement de ${userTag} par la mention
+					const description = streakAnnouncement.description.replace(
+						"${userTag}",
+						userTag
+					);
+					announcementEmbed = createAnnouncementEmbed(
+						title,
+						description,
+						streakAnnouncement.color // ⬅️ Utilisation de la couleur définie, y compris l'Or pour 13
+					);
+				}
+
+				// B) Annonce Multikill (Doublé, Triplé)
+				// On affiche si le compteur rapide est >= 2 ET si la victoire était rapide (pour garantir le chrono)
+				if (currentRapid.count >= 2 && isFastKill) {
+					const rapidAnnouncement = MULTIKILL_ANNOUNCEMENTS.sort(
+						(a, b) => b.threshold - a.threshold
+					).find((a) => a.threshold === currentRapid.count);
+
+					if (rapidAnnouncement) {
+						const title = rapidAnnouncement.message;
+						// Remplacement de ${userTag} par la mention
+						const description = rapidAnnouncement.description.replace(
+							"${userTag}",
+							userTag
+						);
+
+						// Si l'Embed de Streak existe déjà, nous ajoutons l'annonce rapide à celui-ci
+						if (announcementEmbed) {
+							announcementEmbed.addFields({
+								name: title,
+								value: description,
+								inline: false,
+							});
+						} else {
+							// Sinon, on crée un nouvel Embed uniquement pour la rapidité
+							announcementEmbed = createAnnouncementEmbed(
+								title,
+								description,
+								0x00bfff
+							); // Bleu clair pour la rapidité
+						}
+					}
+				}
+
+				// Envoi de l'Embed d'Annonce (Série / Rapidité) après l'Embed de résultat
+				if (announcementEmbed && replyMessage) {
+					await channel
+						.send({ embeds: [announcementEmbed] })
+						.catch(console.error);
+				}
+			} else if (reason === "cancel" || reason === "time") {
+				// --- GESTION DE LA FIN DE SÉRIE ---
+				if (currentStreak.count >= 3 && currentStreak.playerId) {
+					const userName =
+						channel.client.users.cache.get(currentStreak.playerId)?.username ||
+						"un joueur";
+					const embedReset = createAnnouncementEmbed(
+						"🛑 SÉRIE INTERROMPUE !",
+						`La série de **${currentStreak.count}** victoires de **${userName}** est terminée.`,
+						0xff0000
+					);
+					await channel.send({ embeds: [embedReset] }).catch(console.error);
+				}
+				// Réinitialiser les deux séries pour tout abandon ou timeout
+				winStreaks.delete(channelId);
+				rapidStreaks.delete(channelId);
+				// finalRapidStreak reste null
+				console.log(
+					`[GAME] ❌ Partie annulée/abandonnée. Séries réinitialisées.`
+				);
+
+				// --- EMBED D'ABANDON ---
+				endEmbed = new EmbedBuilder()
 					.setTitle(opponent ? "🏳️ Duel annulé" : "🚨 Partie Abandonnée")
 					.setDescription(
 						`La réponse était **${gameData.title}**\nAlbum : *${gameData.album}*`
 					)
 					.setThumbnail(gameData.cover)
 					.setColor(0xff0000);
-				channel
-					.send({ embeds: [loseEmbed], components: getEndGameComponents() })
+				await channel
+					.send({ embeds: [endEmbed], components: getEndGameComponents() })
 					.catch(() => {});
 			}
+
+			const replayFilter = (i: MessageComponentInteraction) => {
+				if (opponent)
+					return i.user.id === launcher.id || i.user.id === opponent.id;
+				return !i.user.bot;
+			};
+
+			const replayCollector = channel.createMessageComponentCollector({
+				filter: (i) => i.customId === ID_GAME_REPLAY && replayFilter(i),
+				time: 30000,
+			});
+
+			replayCollector.on("collect", async (i) => {
+				if (activeGames.has(channel.id)) {
+					await i.reply({
+						content: "🚫 Une partie a déjà redémarré !",
+						flags: MessageFlags.Ephemeral,
+					});
+					return;
+				}
+				replayCollector.stop();
+				await i.reply({
+					content: "🔄 Relance de la partie avec les mêmes paramètres...",
+					flags: MessageFlags.Ephemeral,
+				});
+				// PASSAGE DE L'ÉTAT RAPIDE LORS DU REJEU
+				runGame(channel, config, launcher, opponent, finalRapidStreak);
+			});
 		})();
 	});
 }
