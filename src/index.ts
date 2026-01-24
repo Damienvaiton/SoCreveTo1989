@@ -4,6 +4,7 @@ import fs from "fs";
 import path from "path";
 import { fileURLToPath } from "url";
 import { dirname } from "path";
+import { initStepReminders } from "./services/reminderService.js";
 
 // Equivalent de __dirname en ES6
 const __filename = fileURLToPath(import.meta.url);
@@ -19,6 +20,9 @@ const client = new Client({
 		GatewayIntentBits.GuildMessages,
 		GatewayIntentBits.GuildMembers,
 		GatewayIntentBits.MessageContent,
+		GatewayIntentBits.GuildMessageReactions,
+		GatewayIntentBits.DirectMessages, // Crucial pour les DMs
+		GatewayIntentBits.DirectMessageReactions, // Crucial pour les réactions en DM
 	],
 });
 
@@ -85,6 +89,12 @@ client.commands = new Collection<string, any>();
 			console.error(`❌ Erreur lors du chargement de l'event ${file}:`, error);
 		}
 	}
+
+	// 🚀 Initialisation des rappels une fois connecté
+	client.once(Events.ClientReady, () => {
+		initStepReminders(client);
+		console.log("⏰ Service de rappels des pas activé");
+	});
 
 	// 🔐 Connexion à l'API Discord
 	console.log("🚀 Connexion au bot...");
