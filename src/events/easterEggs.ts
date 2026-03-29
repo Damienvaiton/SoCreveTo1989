@@ -21,7 +21,7 @@ export default {
 		if (isCoquin || hasGrrr || isGourmand) {
 			// Lien direct .gif de media1.tenor.com pour l'affichage propre
 			await message.reply(
-				"https://media1.tenor.com/m/rt23AR7cgwUAAAAC/sabrina-carpenter-sabrina-carpenter-snl.gif"
+				"https://tenor.com/view/sabrina-carpenter-sabrina-carpenter-snl-sabrina-snl-bite-lip-flirt-gif-12600428547893134085",
 			);
 		} else if (content === "!conne") {
 			await message.reply(

@@ -102,6 +102,7 @@ export function initStepReminders(client: Client) {
 					)
 					.setColor(0x57f287);
 				await user.send({ embeds: [successEmbed] });
+				console.log(`[REMINDER] ${user.username} a validé ses pas.`);
 			}
 		}
 	});
